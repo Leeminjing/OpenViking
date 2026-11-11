@@ -30,6 +30,51 @@ if TYPE_CHECKING:
 
 from openviking_cli.exceptions import NotFoundError
 
+# New users share experience memories and peer content under the advisory restrictions below.
+DEFAULT_GLOBAL_POLICY = """---
+type: global-access-policy
+schema_version: 1
+default: deny
+rules:
+  - effect: allow
+    path: memories/experiences
+    recursive: true
+  - effect: allow
+    path: peers
+    recursive: true
+---
+
+# 给 Global Agent 的留言
+
+## 读取范围
+
+只读取以下目录，其他目录一律不读取；privacy、sessions 目录在任何情况下都不读取。
+
+- memories/experiences/
+- peers/{peer_id}/memories/preferences/：每个 peer 下的 preferences 目录
+
+## 使用要求
+
+以下要求由平台服务角色遵守。
+
+### 用途
+
+- 可以：整理为团队经验，在团队问答中作为依据
+- 不可以：用于绩效评估或人事决策；分享到团队空间以外；用于训练模型
+
+### 不要提取的内容
+
+- 闲聊、情绪表达等个人交流内容
+- 个人隐私：健康、家庭、请假原因与个人安排
+- 人事信息：薪资、绩效、晋升，以及对同事的评价
+- 密钥、账号与密码
+- 尚未形成结论的讨论
+
+### 时间范围
+
+- 不限
+"""
+
 
 @dataclass
 class DirectoryDefinition:
@@ -251,11 +296,11 @@ class DirectoryInitializer:
     async def initialize_user_directories(
         self, ctx: RequestContext, *, lease_ref: Any = None
     ) -> int:
-        """Initialize the current user's root and first-level entry directories.
+        """Initialize user entries, experience memories, and a new user's policy.
 
-        Concrete leaf namespaces under entries such as ``memories`` or ``sessions``
-        are still created lazily when content is written. This keeps a new user
-        root discoverable without materializing the full empty taxonomy.
+        Other leaf namespaces under ``memories`` or ``sessions`` are created
+        lazily when content is written. Existing user roots receive no policy
+        defaults, so initialization cannot restore revoked sharing permissions.
         """
         if "user" not in PRESET_DIRECTORIES:
             return 0
@@ -271,7 +316,18 @@ class DirectoryInitializer:
         *,
         lease_ref: Any = None,
     ) -> list[_DirectoryTarget]:
-        """Initialize roots before children and index successful writes as one batch."""
+        """Return created directories after indexing their L0/L1 as one batch.
+
+        Writes inherit ``lease_ref``. Only physically new user roots receive a
+        default GLOBAL policy; existing policy files are preserved. Storage
+        failures propagate to the caller.
+        """
+        viking_fs = self._get_viking_fs()
+        new_user_roots = [
+            target
+            for target in roots
+            if target.scope == "user" and not await viking_fs.exists(target.uri, ctx=target.ctx)
+        ]
         results = await asyncio.gather(
             *(self._ensure_agfs_directory(target, lease_ref=lease_ref) for target in roots),
             return_exceptions=True,
@@ -287,6 +343,12 @@ class DirectoryInitializer:
         await self._ensure_directory_l0_l1_vectors(created)
         if error is not None:
             raise error
+        for target in new_user_roots:
+            policy_uri = f"{target.uri}/GLOBAL_POLICY.md"
+            if not await viking_fs.exists(policy_uri, ctx=target.ctx):
+                await viking_fs.write_file(
+                    policy_uri, DEFAULT_GLOBAL_POLICY, ctx=target.ctx, lease_ref=lease_ref
+                )
         return created
 
     @staticmethod
@@ -324,7 +386,7 @@ class DirectoryInitializer:
         ctx: RequestContext,
     ) -> tuple[_DirectoryTarget, list[_DirectoryTarget]]:
         # Preset initialization is a server-controlled write to the current
-        # user's own root and first-level directories. Actor-peer view must
+        # user's own root and preset directories. Actor-peer view must
         # still protect peer subtrees during normal filesystem mutations, but
         # it must not prevent a fresh user from creating the container that
         # owns those subtrees in the first place.
@@ -348,6 +410,18 @@ class DirectoryInitializer:
             )
             for child in user_tree.children
         ]
+        # Compile inputs must exist before a new user's team task is created.
+        memories = next(child for child in user_tree.children if child.path == "memories")
+        experiences = next(child for child in memories.children if child.path == "experiences")
+        children.append(
+            _DirectoryTarget(
+                uri=f"{user_root_uri}/memories/experiences",
+                parent_uri=f"{user_root_uri}/memories",
+                definition=experiences,
+                scope="user",
+                ctx=initialization_ctx,
+            )
+        )
         return root, children
 
     @staticmethod

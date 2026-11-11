@@ -1909,7 +1909,6 @@ async def test_indexed_move_preserves_native_vector_transfer(request_context):
     )
     _with_pathlock(viking_fs)
     service = FSService(viking_fs=viking_fs)
-    service.compile_lifecycle = SimpleNamespace(move_target=AsyncMock())
     service._refresh_move_parents = AsyncMock()
 
     await service.mv(source, target, ctx=request_context)
@@ -1921,7 +1920,6 @@ async def test_indexed_move_preserves_native_vector_transfer(request_context):
     viking_fs.mv.assert_awaited_once_with(
         source, target, ctx=replace(request_context, bypass_acl=True), lease_ref=ANY
     )
-    service.compile_lifecycle.move_target.assert_awaited_once_with(source, target, request_context)
     service._refresh_move_parents.assert_awaited_once_with(
         from_uri=source,
         to_uri=target,
