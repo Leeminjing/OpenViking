@@ -426,7 +426,9 @@ def request_context():
 @pytest.mark.asyncio
 async def test_read_visible_strips_memory_metadata_before_slicing(request_context):
     raw = 'line one\nline two\n\n<!-- MEMORY_FIELDS\n{"secret":"hidden"}\n-->'
-    viking_fs = SimpleNamespace(read_file=AsyncMock(return_value=raw))
+    viking_fs = SimpleNamespace(
+        read_file=AsyncMock(return_value=raw), authorize_read=lambda ctx, targets: ctx
+    )
     service = FSService(viking_fs=viking_fs)
     uri = "viking://user/ryoma/memories/notes/private.md"
 
@@ -449,7 +451,9 @@ async def test_read_visible_strips_supported_memory_metadata_trailers(
 ):
     uri = "viking://user/ryoma/memories/notes/private.md"
     service = FSService(
-        viking_fs=SimpleNamespace(read_file=AsyncMock(return_value=raw)),
+        viking_fs=SimpleNamespace(
+            read_file=AsyncMock(return_value=raw), authorize_read=lambda ctx, targets: ctx
+        ),
     )
 
     assert await service.read_visible(uri, ctx=request_context) == "visible"
